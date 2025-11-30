@@ -51,11 +51,13 @@ class USV_Model:
         #   Definition: EKF Matrices for the PF-FG Approach -----------------------------------------
 
         #   Covariance matrices for state estimation
-        self.P = np.eye(6)
+        self.P_IMU = np.eye(6)
+        self.P_sonar = np.eye(6)
+        self.P = None
 
         #   Process covariance matrices
-        self.Q_IMU = np.diag([0.5, 0.5, 0.5])
-        self.Q_sonar = np.diag([0.5, 0.5, 0.5])
+        self.Q_IMU = np.diag([5.0, 5.0, 5.0])
+        self.Q_sonar = np.diag([5.0, 5.0, 5.0])
         self.dt = 0.01
 
         ##  H is defined as an identity matrix for this case (both sonar and IMU)
@@ -81,7 +83,7 @@ class USV_Model:
                    [0.0, 0.0, 0.0]])
 
         #   Measurement noise covariances for GPS/INS
-        self.R = np.diag([1.0, 1.0, 0.1, 0.5, 0.5, 0.05])
+        self.R = np.eye(6)
         self.R_inv = np.linalg.inv(self.R)
 
         self.Q_combined =   self.G_IMU @ self.Q_IMU @ self.G_IMU.T + \
@@ -284,6 +286,11 @@ class USV_Model:
     def particle_filter(self):
         real_coords = self.compute_real_coords()        #   Get real coordinates for evaluation
         estimated_coords = np.zeros_like(real_coords)   #   To store estimated positions
+        
+        #   NEW: Three lines
+        actual_coords = real_coords[0]
+        IMU_coords = actual_coords[:, np.newaxis]
+        sonar_coords = actual_coords[:, np.newaxis]
 
         #   Simulation parameters
         T = len(real_coords) - 1
@@ -315,15 +322,13 @@ class USV_Model:
             while sonar_data[sonar_idx,0] < t:
                 sonar_idx += 1
 
-            if imu_idx > 0 and imu_data[imu_idx,0] > t:
-                imu_idx -= 1
-            if sonar_idx > 0 and sonar_data[sonar_idx,0] > t:
-                sonar_idx -= 1
+            if imu_idx > 0 and imu_data[imu_idx,0] > t:         imu_idx -= 1
+            if sonar_idx > 0 and sonar_data[sonar_idx,0] > t:   sonar_idx -= 1
             
             #   ---------------------------------
             #   Obtain diffs for sonar and IMU
             if sonar_idx > 1:
-                sonar_measures = self.compute_sonar_diff(
+                sonar_measures = self.compute_sonar_diff(                                   #   [dx, dy, d_theta]        
                     int(sonar_data[sonar_idx-1,1]),
                     int(sonar_data[sonar_idx,1])
                 )
@@ -331,17 +336,46 @@ class USV_Model:
                 sonar_measures = np.array([0.0, 0.0, 0.0])
 
             imu_measures = self.compute_imu_diff(imu_data[imu_idx,1:4])                     #   [ax, ay, gz]
-            particles_mask = np.ones((len(imu_measures), self.n_particles))
-            imu_measures = np.array(imu_measures[:, np.newaxis] * particles_mask)
-            sonar_measures = np.array(sonar_measures[:, np.newaxis] * particles_mask)       #   [dx, dy, d_theta]
+
+
+            # --- DYNAMIC UPDATE ----------------------------------------------------------------------------
+
+            IMU_coords_prev = IMU_coords.copy()
+            sonar_coords_prev = sonar_coords.copy()
+
+            IMU_coords = self.F @ IMU_coords + self.G_IMU @ imu_measures[:, np.newaxis]
+            sonar_coords = self.F @ sonar_coords + self.G_sonar @ sonar_measures[:, np.newaxis]
+            IMU_coords[2] = wrap_to_pi(IMU_coords[2])
+            sonar_coords[2] = wrap_to_pi(sonar_coords[2])
+
+            #   Covariance calculations (IMU & sonar)
+            self.P_IMU = self.F @ self.P_IMU @ self.F.T + self.G_IMU @ self.Q_IMU @ self.G_IMU.T
+            self.P_sonar = self.F @ self.P_sonar @ self.F.T + self.G_sonar @ self.Q_sonar @ self.G_sonar.T
+
+            #   FUSION (Combine IMU and Sonar estimates to get the "Actual" position)
+            P_IMU_inv = np.linalg.pinv(self.P_IMU)
+            P_sonar_inv = np.linalg.pinv(self.P_sonar)
+            P_actual_inv = P_IMU_inv + P_sonar_inv
+            self.P = np.linalg.pinv(P_actual_inv)
+            
+            #   Fused X = P_actual * (P_IMU_inv * IMU_coords + P_sonar_inv * sonar_coords)
+            actual_coords = (   self.P @ 
+                                (P_IMU_inv @ IMU_coords + 
+                                P_sonar_inv @ sonar_coords)).flatten()
+            
+            actual_coords[2] = wrap_to_pi(actual_coords[2])
+            self.P_IMU = self.P
+            self.P_sonar = self.P
             
 
             # --- 1. PREDICTION STEP ------------------------------------------------------------------------
 
-            #   Apply the deterministic motion update
-            particle_states =   self.F @ particle_states + \
-                                self.G_IMU @ imu_measures + \
-                                self.G_sonar @ sonar_measures
+            #   Delta between current actual state and the previous average state (approximates the deterministic motion)
+            delta_x = ((IMU_coords - IMU_coords_prev) + (sonar_coords - sonar_coords_prev)) / 2
+
+            #   Apply motion and add process noise to particles
+            delta_x_matrix = delta_x * np.ones((6, self.n_particles))
+            particle_states += delta_x_matrix
 
             #   Add stochastic process noise (w_k^(i))
             standard_normal_noise = np.random.randn(particle_states.shape[0], self.n_particles)
@@ -406,13 +440,14 @@ class USV_Model:
             # --- 4. ESTIMATE STATE -------------------------------------------------------------------------
             
             #   The final state estimate is the weighted mean of all particles
-            computed_coords = np.sum(particle_states * particle_weights, axis=1)
-            if (i % 100 == 0):
-                estimated_coords[int(t), :] = computed_coords
-                print(f"Time {t:.2f}s: Added Position to estimation vector : position {int(t)}\n")
-            elif (i % 10 == 0):
-                computed_coords = np.sum(particle_states * particle_weights, axis=1)
-                print(f"Time {t:.2f}s: Estimated Pos = {computed_coords} | True Pos = {real_coords[GPS_time_idx]}\n")
+            #   Change conditions based on self.dt value!!
+            actual_coords = np.sum(particle_states * particle_weights, axis=1)
+            if (i % int(1/self.dt) == 0):
+                estimated_coords[int(t), :] = actual_coords
+                print(f"Time {t:.2f}s: Added Position to estimation vector : position {int(t)} | Error: {actual_coords - real_coords[int(t), :]}\n")
+            elif (i % int(0.2/self.dt) == 0):
+                actual_coords = np.sum(particle_states * particle_weights, axis=1)
+                print(f"Time {t:.2f}s: Estimated Pos = {actual_coords} | True Pos = {real_coords[GPS_time_idx]}\n")
 
         return real_coords, estimated_coords
 
