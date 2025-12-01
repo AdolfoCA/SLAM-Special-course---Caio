@@ -41,12 +41,12 @@ def wrap_to_pi(angle):
     4. Repeat process (each M iterations)
 """
 class USV_Model:
-    def __init__(self, M_iterations: int, num_particles: int, max_landmarks: int):
+    def __init__(self, num_particles: int):
         self.n_particles = num_particles
 
         #   Factor Graph related parameters (second part related - mapping)
-        self.M_iterations = M_iterations
-        self.max_landmarks = max_landmarks
+        #self.M_iterations = M_iterations
+        #self.max_landmarks = max_landmarks
         
         #   Definition: EKF Matrices for the PF-FG Approach -----------------------------------------
 
@@ -56,9 +56,11 @@ class USV_Model:
         self.P = None
 
         #   Process covariance matrices
-        self.Q_IMU = np.diag([5.0, 5.0, 5.0])
-        self.Q_sonar = np.diag([5.0, 5.0, 5.0])
-        self.dt = 0.01
+        self.Q_IMU = np.diag([2.0, 2.0, 2.0])
+        self.Q_sonar = np.diag([1.5, 1.5, 1.5])
+        self.dt = 0.1
+        self.sonar_dt = 0.0667
+        self.IMU_dt = 0.01
 
         ##  H is defined as an identity matrix for this case (both sonar and IMU)
         self.F = np.array([[1.0, 0.0, 0.0, self.dt, 0.0, 0.0],
@@ -88,8 +90,15 @@ class USV_Model:
 
         self.Q_combined =   self.G_IMU @ self.Q_IMU @ self.G_IMU.T + \
                             self.G_sonar @ self.Q_sonar @ self.G_sonar.T
+        
+        #   Enforce Symmetry (Crucial for numerical stability)
+        self.Q_combined = 0.5 * (self.Q_combined + self.Q_combined.T) 
+        
+        #   Add a small epsilon to the diagonal to ensure strict Positive Definiteness
+        epsilon = 1e-12 
+        self.Q_combined += np.eye(self.Q_combined.shape[0]) * epsilon
 
-        # Get the lower triangular matrix L for noise sampling in PF (Cholesky decomposition)
+        #   Get the lower triangular matrix L for noise sampling in PF (Cholesky decomposition)
         self.L_combined = np.linalg.cholesky(self.Q_combined)
         
         return
@@ -311,6 +320,7 @@ class USV_Model:
 
         imu_idx = 0
         sonar_idx = 0
+        max_error = 0.0
 
         for i in range(N):
             t = time[i]
@@ -442,14 +452,20 @@ class USV_Model:
             #   The final state estimate is the weighted mean of all particles
             #   Change conditions based on self.dt value!!
             actual_coords = np.sum(particle_states * particle_weights, axis=1)
+            actual_coords[2] = wrap_to_pi(actual_coords[2])
+
+            IMU_coords = actual_coords[:,np.newaxis]
+            sonar_coords = actual_coords[:,np.newaxis]
+            error = actual_coords[:3] - real_coords[int(t), :3]
+            max_error = np.maximum(max_error,np.max(np.abs(error)))
             if (i % int(1/self.dt) == 0):
                 estimated_coords[int(t), :] = actual_coords
-                print(f"Time {t:.2f}s: Added Position to estimation vector : position {int(t)} | Error: {actual_coords - real_coords[int(t), :]}\n")
+                print(f"Time {t:.2f}s: Added Position to estimation vector : position {int(t)} | Error: {error}\n")
             elif (i % int(0.2/self.dt) == 0):
                 actual_coords = np.sum(particle_states * particle_weights, axis=1)
                 print(f"Time {t:.2f}s: Estimated Pos = {actual_coords} | True Pos = {real_coords[GPS_time_idx]}\n")
 
-        return real_coords, estimated_coords
+        return max_error, real_coords, estimated_coords
 
     
     """
@@ -463,9 +479,9 @@ class USV_Model:
         real_x, real_y, real_theta = real_coords[:, 0], real_coords[:, 1], real_coords[:, 2]
         estimated_x, estimated_y, estimated_theta = estimated_coords[:, 0], estimated_coords[:, 1], estimated_coords[:, 2]
 
-        #   Time vector
+        #   Time vector (seconds)
         N = len(real_coords)
-        time = np.arange(N) * self.dt
+        time = np.arange(N)
         valid_indices = np.where(np.any(estimated_coords[:, 0:3] != 0, axis=1))[0]
         
         if len(valid_indices) == 0 and N > 0:
@@ -562,8 +578,11 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(M_iterations=10, num_particles=100, max_landmarks=50)
-    real_coords, estimated_coords = usv_model.particle_filter()
+    usv_model = USV_Model(num_particles=100)
+    max_error, real_coords, estimated_coords = usv_model.particle_filter()
+
+    #   Plot maximum error
+    print(f"Maximum registered error (x,y,theta): {max_error}\n")
 
     #   Plot results
     usv_model.plot_results(real_coords,estimated_coords)
