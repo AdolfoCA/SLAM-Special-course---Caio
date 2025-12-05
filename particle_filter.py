@@ -56,8 +56,8 @@ class USV_Model:
         self.P = np.eye(6)
 
         #   Process covariance matrices
-        self.Q_IMU = np.diag([2.0, 2.0, 2.0])
-        self.Q_sonar = np.diag([1.5, 1.5, 1.5])
+        self.Q_IMU = np.eye(3)            #np.diag([2.0, 2.0, 2.0])
+        self.Q_sonar = np.eye(3)          #np.diag([1.5, 1.5, 1.5])
         self.dt = 0.1
         self.sonar_dt = 0.0667
         self.IMU_dt = 0.01
@@ -85,7 +85,7 @@ class USV_Model:
                    [0.0, 0.0, 0.0]])
 
         #   Measurement noise covariances for GPS/INS
-        self.R = np.eye(6)*2
+        self.R = np.eye(6)              #*2
         self.R_inv = np.linalg.inv(self.R)
 
         self.Q_combined =   self.G_IMU @ self.Q_IMU @ self.G_IMU.T + \
@@ -321,6 +321,7 @@ class USV_Model:
         imu_idx = 0
         sonar_idx = 0
         max_error = 0.0
+        mean_error = np.zeros((1,N))
 
         for i in range(N):
             t = time[i]
@@ -456,6 +457,9 @@ class USV_Model:
             sonar_coords = actual_coords[:,np.newaxis]
 
             error = actual_coords[:3] - real_coords[int(t), :3]
+            error[2] = wrap_to_pi(error[2])
+            mean_error[i] = np.sum(np.abs(error[0]) + np.abs(error[1]) + np.abs(error[2]))/3
+
             max_error = np.maximum(max_error,np.max(np.abs(error)))
             if (i % int(1/self.dt) == 0):
                 estimated_coords[int(t), :] = actual_coords
@@ -464,7 +468,7 @@ class USV_Model:
                 actual_coords = np.sum(particle_states * particle_weights, axis=1)
                 print(f"Time {t:.2f}s: Estimated Pos = {actual_coords} | True Pos = {real_coords[GPS_time_idx]}\n")
 
-        return max_error, real_coords, estimated_coords
+        return max_error, mean_error, real_coords, estimated_coords
 
     
     """
@@ -578,10 +582,14 @@ class USV_Model:
 
 if __name__ == "__main__":
     usv_model = USV_Model(num_particles=100)
-    max_error, real_coords, estimated_coords = usv_model.particle_filter()
+    max_error, mean_error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
     print(f"Maximum registered error (x,y,theta): {max_error}\n")
+    length_error = len(mean_error)
+    mean_error = np.sum(mean_error)/length_error
+    print(f"Mean error (x,y,theta): {mean_error}\n")
+
 
     #   Plot results
     usv_model.plot_results(real_coords,estimated_coords)
