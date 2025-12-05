@@ -450,11 +450,10 @@ class USV_Model:
             
             #   The final state estimate is the weighted mean of all particles
             #   Change conditions based on self.dt value!!
-            IMU_coords = actual_coords[:,np.newaxis]
-            sonar_coords = actual_coords[:,np.newaxis]
-
             actual_coords = np.sum(particle_states * particle_weights, axis=1)
             actual_coords[2] = wrap_to_pi(actual_coords[2])
+            IMU_coords = actual_coords[:,np.newaxis]
+            sonar_coords = actual_coords[:,np.newaxis]
 
             error = actual_coords[:3] - real_coords[int(t), :3]
             max_error = np.maximum(max_error,np.max(np.abs(error)))
