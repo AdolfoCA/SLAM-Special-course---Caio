@@ -321,7 +321,7 @@ class USV_Model:
         imu_idx = 0
         sonar_idx = 0
         max_error = 0.0
-        mean_error = np.zeros((1,N))
+        mean_error = np.zeros(N)
 
         for i in range(N):
             t = time[i]
@@ -581,7 +581,7 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=100)
+    usv_model = USV_Model(num_particles=10)
     max_error, mean_error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
