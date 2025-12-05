@@ -51,9 +51,9 @@ class USV_Model:
         #   Definition: EKF Matrices for the PF-FG Approach -----------------------------------------
 
         #   Covariance matrices for state estimation
-        self.P_IMU = np.eye(6)
-        self.P_sonar = np.eye(6)
-        self.P = None
+        self.P_IMU = None
+        self.P_sonar = None
+        self.P = np.eye(6)
 
         #   Process covariance matrices
         self.Q_IMU = np.diag([2.0, 2.0, 2.0])
@@ -359,8 +359,9 @@ class USV_Model:
             sonar_coords[2] = wrap_to_pi(sonar_coords[2])
 
             #   Covariance calculations (IMU & sonar)
-            self.P_IMU = self.F @ self.P_IMU @ self.F.T + self.G_IMU @ self.Q_IMU @ self.G_IMU.T
-            self.P_sonar = self.F @ self.P_sonar @ self.F.T + self.G_sonar @ self.Q_sonar @ self.G_sonar.T
+            term = self.F @ self.P @ self.F.T
+            self.P_IMU = term + self.G_IMU @ self.Q_IMU @ self.G_IMU.T
+            self.P_sonar = term + self.G_sonar @ self.Q_sonar @ self.G_sonar.T
 
             #   FUSION (Combine IMU and Sonar estimates to get the "Actual" position)
             P_IMU_inv = np.linalg.pinv(self.P_IMU)
@@ -374,8 +375,6 @@ class USV_Model:
                                 P_sonar_inv @ sonar_coords)).flatten()
             
             actual_coords[2] = wrap_to_pi(actual_coords[2])
-            self.P_IMU = self.P
-            self.P_sonar = self.P
             
 
             # --- 1. PREDICTION STEP ------------------------------------------------------------------------
