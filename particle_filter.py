@@ -581,14 +581,17 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=10)
-    max_error, mean_error, real_coords, estimated_coords = usv_model.particle_filter()
+    usv_model = USV_Model(num_particles=500)
+    max_error, error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
     print(f"Maximum registered error (x,y,theta): {max_error}\n")
-    length_error = len(mean_error)
-    mean_error = np.sum(mean_error)/length_error
+    length_error = len(error)
+    mean_error = np.sum(error)/length_error
+    std_deviation = np.std(error, ddof=1)
+
     print(f"Mean error (x,y,theta): {mean_error}\n")
+    print(f"Standard deviation (x,y,theta): {std_deviation}\n")
 
 
     #   Plot results
