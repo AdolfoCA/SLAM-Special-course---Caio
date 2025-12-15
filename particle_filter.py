@@ -51,13 +51,10 @@ class USV_Model:
         #   Definition: EKF Matrices for the PF-FG Approach -----------------------------------------
 
         #   Covariance matrices for state estimation
-        self.P_IMU = None
-        self.P_sonar = None
         self.P = np.eye(6)
 
         #   Process covariance matrices
-        self.Q_IMU = np.eye(3)            #np.diag([2.0, 2.0, 2.0])
-        self.Q_sonar = np.eye(3)          #np.diag([1.5, 1.5, 1.5])
+        self.Q_IMU = np.diag([2.0, 2.0, 2.0])
         self.dt = 0.1
         self.sonar_dt = 0.0667
         self.IMU_dt = 0.01
@@ -76,30 +73,18 @@ class USV_Model:
                  [self.dt, 0.0, 0.0],
                  [0.0, self.dt, 0.0],
                  [0.0, 0.0, 1.0]])
-        
-        self.G_sonar = np.array([[1.0, 0.0, 0.0],
-                   [0.0, 1.0, 0.0],
-                   [0.0, 0.0, 1.0],
-                   [0.0, 0.0, 0.0],
-                   [0.0, 0.0, 0.0],
-                   [0.0, 0.0, 0.0]])
 
-        #   Measurement noise covariances for GPS/INS
-        self.R = np.eye(6)              #*2
+        #   Measurement noise covariances for Sonar
+        self.R = np.diag([0.5, 0.5, 0.5])
         self.R_inv = np.linalg.inv(self.R)
 
-        self.Q_combined =   self.G_IMU @ self.Q_IMU @ self.G_IMU.T + \
-                            self.G_sonar @ self.Q_sonar @ self.G_sonar.T
-        
-        #   Enforce Symmetry (Crucial for numerical stability)
-        self.Q_combined = 0.5 * (self.Q_combined + self.Q_combined.T) 
-        
-        #   Add a small epsilon to the diagonal to ensure strict Positive Definiteness
-        epsilon = 1e-12 
-        self.Q_combined += np.eye(self.Q_combined.shape[0]) * epsilon
-
         #   Get the lower triangular matrix L for noise sampling in PF (Cholesky decomposition)
-        self.L_combined = np.linalg.cholesky(self.Q_combined)
+        Q_full = self.G_IMU @ self.Q_IMU @ self.G_IMU.T
+
+        # Add a tiny amount of jitter (e.g., 1e-9) to the diagonal
+        JITTER = 1e-9  
+        Q_full += JITTER * np.eye(6)
+        self.L = np.linalg.cholesky(Q_full)
         
         return
     
@@ -296,10 +281,8 @@ class USV_Model:
         real_coords = self.compute_real_coords()        #   Get real coordinates for evaluation
         estimated_coords = np.zeros_like(real_coords)   #   To store estimated positions
         
-        #   NEW: Three lines
-        actual_coords = real_coords[0]
-        IMU_coords = actual_coords[:, np.newaxis]
-        sonar_coords = actual_coords[:, np.newaxis]
+        #   Actual coordinates for USV
+        actual_coords = real_coords[0][:, np.newaxis]
 
         #   Simulation parameters
         T = len(real_coords) - 1
@@ -351,37 +334,27 @@ class USV_Model:
 
             # --- DYNAMIC UPDATE ----------------------------------------------------------------------------
 
-            IMU_coords_prev = IMU_coords.copy()
-            sonar_coords_prev = sonar_coords.copy()
-
-            IMU_coords = self.F @ IMU_coords + self.G_IMU @ imu_measures[:, np.newaxis]
-            sonar_coords = self.F @ sonar_coords + self.G_sonar @ sonar_measures[:, np.newaxis]
-            IMU_coords[2] = wrap_to_pi(IMU_coords[2])
-            sonar_coords[2] = wrap_to_pi(sonar_coords[2])
-
-            #   Covariance calculations (IMU & sonar)
-            term = self.F @ self.P @ self.F.T
-            self.P_IMU = term + self.G_IMU @ self.Q_IMU @ self.G_IMU.T
-            self.P_sonar = term + self.G_sonar @ self.Q_sonar @ self.G_sonar.T
-
-            #   FUSION (Combine IMU and Sonar estimates to get the "Actual" position)
-            P_IMU_inv = np.linalg.pinv(self.P_IMU)
-            P_sonar_inv = np.linalg.pinv(self.P_sonar)
-            P_actual_inv = P_IMU_inv + P_sonar_inv
-            self.P = np.linalg.pinv(P_actual_inv)
+            #   Rotate IMU accelerations (a_x,a_y) before dynamic update
+            theta = actual_coords[2,0]
+            R_theta = np.array([
+                [np.cos(theta), np.sin(theta)],
+                [-np.sin(theta),  np.cos(theta)]])
             
-            #   Fused X = P_actual * (P_IMU_inv * IMU_coords + P_sonar_inv * sonar_coords)
-            actual_coords = (   self.P @ 
-                                (P_IMU_inv @ IMU_coords + 
-                                P_sonar_inv @ sonar_coords)).flatten()
-            
-            actual_coords[2] = wrap_to_pi(actual_coords[2])
+            rotated_accel = R_theta @ imu_measures[0:2]
+            imu_input_global = np.array([rotated_accel[0], rotated_accel[1], imu_measures[2]])
+
+            #   Coordinates and covariance propagation (IMU measurements inclusion)
+            actual_coords_prev = actual_coords.copy()
+            actual_coords = self.F @ actual_coords + self.G_IMU @ imu_input_global[:, np.newaxis]
+            self.P = self.F @ self.P @ self.F.T + self.G_IMU @ self.Q_IMU @ self.G_IMU.T
+            actual_coords[2,0] = wrap_to_pi(actual_coords[2,0])
             
 
             # --- 1. PREDICTION STEP ------------------------------------------------------------------------
 
             #   Delta between current actual state and the previous average state (approximates the deterministic motion)
-            delta_x = ((IMU_coords - IMU_coords_prev) + (sonar_coords - sonar_coords_prev)) / 2
+            particle_states_prev = particle_states.copy()
+            delta_x = actual_coords - actual_coords_prev
 
             #   Apply motion and add process noise to particles
             delta_x_matrix = delta_x * np.ones((6, self.n_particles))
@@ -389,7 +362,7 @@ class USV_Model:
 
             #   Add stochastic process noise (w_k^(i))
             standard_normal_noise = np.random.randn(particle_states.shape[0], self.n_particles)
-            process_noise = self.L_combined @ standard_normal_noise
+            process_noise = self.L @ standard_normal_noise
 
             #   Apply the noise to spread particles
             particle_states += process_noise 
@@ -400,17 +373,14 @@ class USV_Model:
 
             # --- 2. CORRECTION (WEIGHT UPDATE / GPS MEASUREMENT) -------------------------------------------
             
-            #   Work with the GPS measurement at time t (or most recent)
-            GPS_time_idx = math.floor(t)
-            coords_GPS = real_coords[GPS_time_idx][:, np.newaxis]
-
             #   Measurement residual (error)
-            innovation = coords_GPS - particle_states
+            particles_inc = particle_states - particle_states_prev
+            innovation = sonar_measures[:, np.newaxis] - particles_inc[0:3, :]
             
             #   Calculate likelihood (Probability Density Function)
             #   Assuming a Gaussian (Normal) distribution for the measurement noise R
-            mahalanobis_sq = innovation.T @ self.R_inv @ innovation
-            exponent = -0.5 * np.diag(mahalanobis_sq)
+            mahalanobis_sq = np.sum(innovation * (self.R_inv @ innovation), axis=0)
+            exponent = -0.5 * mahalanobis_sq
 
             #   L = 1 / (sqrt(2*pi*|R|)) * exp(exponent)
             likelihood = np.exp(exponent)
@@ -438,7 +408,7 @@ class USV_Model:
 
             
             #   Resample only if the variance is too high (N_eff < threshold)
-            if N_eff < self.n_particles / 1.4:
+            if self.n_particles > 2 and N_eff < self.n_particles / 1.4:
                 #   Perform Low Variance Resampling (or any preferred method)
                 indices = self.low_variance_resampling(particle_weights)
                 
@@ -451,22 +421,20 @@ class USV_Model:
             
             #   The final state estimate is the weighted mean of all particles
             #   Change conditions based on self.dt value!!
-            actual_coords = np.sum(particle_states * particle_weights, axis=1)
-            actual_coords[2] = wrap_to_pi(actual_coords[2])
-            IMU_coords = actual_coords[:,np.newaxis]
-            sonar_coords = actual_coords[:,np.newaxis]
+            actual_coords = np.sum(particle_states * particle_weights, axis=1)[:, np.newaxis]
+            actual_coords[2,0] = wrap_to_pi(actual_coords[2,0])
 
-            error = actual_coords[:3] - real_coords[int(t), :3]
+            GPS_time_idx = math.floor(t)
+            error = actual_coords[:3,0] - real_coords[GPS_time_idx, :3]
             error[2] = wrap_to_pi(error[2])
             mean_error[i] = np.sum(np.abs(error[0]) + np.abs(error[1]) + np.abs(error[2]))/3
 
             max_error = np.maximum(max_error,np.max(np.abs(error)))
             if (i % int(1/self.dt) == 0):
-                estimated_coords[int(t), :] = actual_coords
+                estimated_coords[int(t), :] = actual_coords[:,0]
                 print(f"Time {t:.2f}s: Added Position to estimation vector : position {int(t)} | Error: {error}\n")
             elif (i % int(0.2/self.dt) == 0):
-                actual_coords = np.sum(particle_states * particle_weights, axis=1)
-                print(f"Time {t:.2f}s: Estimated Pos = {actual_coords} | True Pos = {real_coords[GPS_time_idx]}\n")
+                print(f"Time {t:.2f}s: Estimated Pos = {actual_coords[:,0]} | True Pos = {real_coords[GPS_time_idx]}\n")
 
         return max_error, mean_error, real_coords, estimated_coords
 
@@ -581,7 +549,7 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=500)
+    usv_model = USV_Model(num_particles=100)
     max_error, error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
