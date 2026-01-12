@@ -51,7 +51,7 @@ def hydrodynamic_model_2D(state, rates, accels, u_imu, dt):
     # --- MODEL PARAMETERS (Placeholder Values) ---
     # Coefficients for Surge (u)
     # alpha = [a1...a9]
-    alpha = [0.0, 0.75, 0.75, 0.0, 0.0, 0.0, 0.0, -0.12, 0.01]
+    alpha = [0.0, 0.05, 0.05, 0.0, 0.0, 0.0, 0.0, 0.05, 0.002]
     
     # Coefficients for Sway (v)
     # beta = [b1...b8]

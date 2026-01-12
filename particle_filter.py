@@ -45,13 +45,13 @@ class USV_Model:
         self.n_particles = num_particles
         
         #   Process covariance matrices
-        self.Q_IMU = np.diag([0.02, 0.02, 0.02])
+        self.Q_IMU = np.diag([0.025, 0.025, 0.025])
         self.dt = 0.05              #   5x IMU time step
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
         #   Since dz is 3x1 (dx, dy, dtheta), R must be 3x3
-        self.R = np.diag([1.5, 1.5, 1.5]) 
+        self.R = np.diag([0.5, 0.5, 0.5]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
@@ -59,7 +59,7 @@ class USV_Model:
         self.L = np.linalg.cholesky(self.Q_IMU)
 
         # Hydrodynamic Coefficients (Tuned values)
-        self.alpha = [-0.45, -0.3, 0.011]
+        self.alpha = [-0.05, 0.05, 0.008]
         self.beta = [-1.0, -0.6, 1.0]
         self.prop_rpm = 100.0
 
@@ -324,6 +324,11 @@ class USV_Model:
                 """"""
                 if N_eff < self.n_particles / 1.5 and count_particle > 20:
                     new_particles = np.zeros_like(particles)
+
+                    #   Identify the absolute best particle and extract its velocities
+                    best_idx = np.argmax(weights)
+                    best_p = particles[:, best_idx].copy()
+                    best_vx, best_vy = best_p[3], best_p[4]
                     
                     for j in range(current_N):
                         # Add jitter/noise relative to the L matrix
@@ -335,8 +340,8 @@ class USV_Model:
                         new_particles[2, j] = wrap_to_pi(est_theta + jitter[2])
                         
                         # Carry over the velocity so momentum isn't lost
-                        new_particles[3, j] = np.sum(particles[3, :] * weights)
-                        new_particles[4, j] = np.sum(particles[4, :] * weights)
+                        new_particles[3, j] = best_vx
+                        new_particles[4, j] = best_vy
 
                     particles = new_particles
                     weights = np.ones(current_N) / current_N
@@ -452,7 +457,7 @@ class USV_Model:
         ax1.legend(loc='upper left')
         ax1.grid(True, linestyle=':', alpha=0.6)
         ax1.set_xlim(left=-15,right=15)
-        ax1.set_ylim(bottom=-20,top=40)
+        ax1.set_ylim(bottom=-40,top=40)
         
         
         # --- Subplot 2: Heading Comparison (Theta over Time) ---
@@ -495,7 +500,7 @@ if __name__ == "__main__":
     #   Plot maximum error
     print(f"Maximum registered error (x,y,theta): {max_error}\n")
     length_error = len(error)
-    mean_error = np.sum(error)/length_error
+    mean_error = np.sum(np.abs(error))/length_error
     std_deviation = np.std(error, ddof=1)
 
     print(f"Mean error (x,y,theta): {mean_error}\n")
