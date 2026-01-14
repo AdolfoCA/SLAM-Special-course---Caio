@@ -41,19 +41,19 @@ class USV_Model:
         self.n_particles = num_particles
         
         #   Process covariance matrices
-        self.Q_IMU = np.diag([0.025, 0.025, 0.025])
+        self.Q_IMU = np.diag([0.02, 0.02, 0.02])
         self.dt = 0.05
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        self.R = np.diag([0.5, 0.5, 0.5]) 
+        self.R = np.diag([1.0, 1.0, 1.0]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
         self.L = np.linalg.cholesky(self.Q_IMU)
 
         #   Hydrodynamic Coefficients (Tuned values)
-        self.alpha = [-0.05, 0.05, 0.008]       #   alpha[2], alpha[7], alpha[8] tuned
+        self.alpha = [-0.05, 0.05, 0.005]       #   alpha[2], alpha[7], alpha[8] tuned
         self.beta = [-1.0, -0.6, 1.0]           #   beta[3], beta[6], beta[7] tuned
         self.prop_rpm = 100.0
 
@@ -206,9 +206,15 @@ class USV_Model:
         omega_noisy = np.zeros(current_N)
         
         #   Initialize around first ground truth with some noise
-        particles[0,:] = real_coords[0,0] + np.random.randn(current_N)
-        particles[1,:] = real_coords[0,1] + np.random.randn(current_N)
-        particles[2,:] = real_coords[0,2] + np.random.randn(current_N)
+        particles[0,:] = real_coords[0,0]
+        particles[1,:] = real_coords[0,1]
+        particles[2,:] = real_coords[0,2]
+
+        jitter_N = self.L @ np.random.randn(3,current_N)
+
+        particles[0,:] += jitter_N[0,:]
+        particles[1,:] += jitter_N[1,:]
+        particles[2,:] = wrap_to_pi(particles[2,:] + jitter_N[2,:])
 
         prev_particles = particles.copy()
         imu_data = self.get_IMU_data(T)
@@ -469,7 +475,7 @@ class USV_Model:
         ax1.legend(loc='upper left')
         ax1.grid(True, linestyle=':', alpha=0.6)
         ax1.set_xlim(left=-15,right=15)
-        ax1.set_ylim(bottom=-40,top=40)
+        ax1.set_ylim(bottom=-30,top=40)
         
         #   --- Subplot 2: Heading Comparison (Theta over Time) ---
         
