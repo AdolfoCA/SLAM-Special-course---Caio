@@ -16,29 +16,25 @@ IMU_DIR = "./IMU/"
 GPS_DIR = "./GPS/"
 
 
-def read_csv(file_path: str) -> np.array:
-    """
+"""
     Reads a CSV file and returns its contents as a NumPy array.
     
     Args:
         file_path (str): The path to the CSV file.
-    """
+"""
+def read_csv(file_path: str) -> np.array:
     return np.loadtxt(file_path, delimiter=',', skiprows=1)
 
 
+"""
+    Wraps an angle in rad to the range (-pi, pi]
+"""
 def wrap_to_pi(angle):
-    """Wraps an angle in rad to the range (-pi, pi]"""
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
 """
-    In this class, the F and H matrices must be correctly defined, and the approach to deal with this
-    problem is the following (idealized):
-
-    1. Compute positions with particle filter up to an M iteration
-    2. Run Factor Graph trajectory optimization (over robot and landmarks' positions) - EKF based
-    3. Resample particles with equal weight around final position of the FG optimized trajectory
-    4. Repeat process (each M iterations)
+    USV model class implementing a particle filter for localization using IMU and Sonar data.
 """
 class USV_Model:
     def __init__(self, num_particles: int):
@@ -46,34 +42,42 @@ class USV_Model:
         
         #   Process covariance matrices
         self.Q_IMU = np.diag([0.025, 0.025, 0.025])
-        self.dt = 0.05              #   5x IMU time step
+        self.dt = 0.05
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        #   Since dz is 3x1 (dx, dy, dtheta), R must be 3x3
         self.R = np.diag([0.5, 0.5, 0.5]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
-        #   This is 3x3
         self.L = np.linalg.cholesky(self.Q_IMU)
 
-        # Hydrodynamic Coefficients (Tuned values)
-        self.alpha = [-0.05, 0.05, 0.008]
-        self.beta = [-1.0, -0.6, 1.0]
+        #   Hydrodynamic Coefficients (Tuned values)
+        self.alpha = [-0.05, 0.05, 0.008]       #   alpha[2], alpha[7], alpha[8] tuned
+        self.beta = [-1.0, -0.6, 1.0]           #   beta[3], beta[6], beta[7] tuned
         self.prop_rpm = 100.0
 
 
+    """
+        Hydrodynamic Model for 2D Motion (Surge & Sway)
+        Based on equations (1) and (2) from the Randeni et al. paper.
+        The parameters alpha,beta employed are the dominant ones for which the estimation is sensitive.
+    """
     def hydrodynamic_model_2D(self, r, phi, theta, u_imu):
-        # Surge (u)
+        #   Surge (u)
         u_model = (self.alpha[0]*u_imu + self.alpha[1]*np.sin(theta) + self.alpha[2]*self.prop_rpm)
                    
-        # Sway (v)
+        #   Sway (v)
         v_model = (self.beta[0]*u_imu*r + self.beta[1]*r*abs(r) + self.beta[2]*np.cos(theta)*np.sin(phi))
 
         return u_model, v_model
     
 
+    """
+        Computes real-world coordinates from GPS and heading data.
+        Returns an array of shape (N, 5) where each row contains:
+        [x, y, theta, vx, vy]
+    """
     def compute_real_coords(self) -> np.array:
         heading = read_csv(GPS_DIR + "normalized_heading.csv")          #   In degrees
         coordinates = read_csv(GPS_DIR + "normalized_fix.csv")          #   lat, long, alt
@@ -108,6 +112,9 @@ class USV_Model:
         return  real_positions
     
 
+    """
+        Retrieves IMU data up to a specified total time.
+    """
     def get_IMU_data(self, tot_time: float):
         imu_data = read_csv(IMU_DIR + "normalized_imu.csv")
         imu_time = imu_data[:,0]
@@ -119,6 +126,9 @@ class USV_Model:
         return np.hstack((imu_time[:end_index+1].reshape(-1,1), imu_vals[:end_index+1,:]))
     
 
+    """
+        Retrieves Sonar data up to a specified total time.
+    """
     def get_sonar_data(self, tot_time: float):
         sonar_data = read_csv("normalized_sonar_times.csv")     #   img_idx, time
         sonar_time = sonar_data[:,1]
@@ -135,6 +145,10 @@ class USV_Model:
         return stacked_matrix
     
 
+    """
+        Computes the transformation between two sonar images using feature matching.
+        Returns a numpy array [dx, dy, dtheta_image].
+    """
     def get_transformation(self, img1: cv2.typing.MatLike, img2: cv2.typing.MatLike) -> np.array:
         match = SonarFeatureMatcher()
         filter = SonarImageProcessor()
@@ -160,6 +174,10 @@ class USV_Model:
             return np.array([dx,dy,dtheta_image])
     
 
+    """
+        Computes the sonar difference between two images given their indices.
+        Returns a numpy array [dx, dy, dtheta_image].
+    """
     def compute_sonar_diff(self, img1: int, img2: int) -> np.array:
         img1_path = SONAR_DIR + str(img1) + ".png"
         img2_path = SONAR_DIR + str(img2) + ".png"
@@ -170,20 +188,24 @@ class USV_Model:
         return arr
     
 
+    """
+        Particle Filter implementation for USV localization using IMU and Sonar data.
+        Returns maximum error, error array, real coordinates, and estimated coordinates.
+    """
     def particle_filter(self):
         real_coords = self.compute_real_coords()
         T = len(real_coords) - 1
         time_steps = np.linspace(0, T, int((T+self.dt)/self.dt))
         
-        # --- Initialization ---
+        #   --- Initialization ---
         current_N = self.n_particles
         
-        # State: [x, y, theta, vx, vy]  Shape: (5, N)
+        #   State: [x, y, theta, vx, vy]  Shape: (5, N)
         particles = np.zeros((5, current_N))
         weights = np.ones(current_N) / current_N
         omega_noisy = np.zeros(current_N)
         
-        # Initialize around first ground truth with some noise
+        #   Initialize around first ground truth with some noise
         particles[0,:] = real_coords[0,0] + np.random.randn(current_N)
         particles[1,:] = real_coords[0,1] + np.random.randn(current_N)
         particles[2,:] = real_coords[0,2] + np.random.randn(current_N)
@@ -192,7 +214,7 @@ class USV_Model:
         imu_data = self.get_IMU_data(T)
         sonar_data = self.get_sonar_data(T)
 
-        # Internal states for hydro model (per particle)
+        #   Internal states for hydro model (per particle)
         p_prev = np.zeros(current_N)
         q_prev = np.zeros(current_N)
         r_prev = np.zeros(current_N)
@@ -200,7 +222,7 @@ class USV_Model:
         theta_internal = np.zeros(current_N)
         u_imu_naive = np.zeros(current_N)
         
-        # Tracking variables
+        #   Tracking variables
         estimated_coords = []
         error = []
         max_error = [0.0, 0.0, 0.0]
@@ -214,12 +236,13 @@ class USV_Model:
         imu_idx = 0
         sonar_idx = 0
         prev_sonar_idx = -1
+        prev_imu_idx = -1
         count_particle = 0
 
 
         for _, t in enumerate(time_steps):
             
-            # --- 1. DATA SYNC ---
+            #   --- DATA SYNC ------------------------------------------------------------------
             while imu_data[imu_idx,0] < t:
                 imu_idx += 1
             while sonar_data[sonar_idx,0] < t:
@@ -233,85 +256,81 @@ class USV_Model:
             imu_measures = imu_data[imu_idx, 1:7]
 
 
-            # --- PROPAGATION WITH HYDRODYNAMIC MODEL (IMU) ------------------------------------
-            for i in range(current_N):
-                # Add noise to measurements per particle
-                noise = self.L @ np.random.randn(3)
-                gx, gy, gz = imu_measures[0]+noise[0], imu_measures[1]+noise[1], imu_measures[2]+noise[2]
-                omega_noisy[i] = gz
-                ax = imu_measures[3]
-                
-                # 1. Update internal hydro states
-                u_imu_naive[i] += ax * self.dt
-                u_imu_naive[i] *= 0.98
-                phi[i] += gx * self.dt
-                theta_internal[i] += gy * self.dt
-                
-                # 2. Compute Body Velocities (u, v)
-                u_b, v_b = self.hydrodynamic_model_2D(gz, phi[i], theta_internal[i], u_imu_naive[i])
-                
-                # 3. Update global position using heading
-                particles[2,i] = wrap_to_pi(particles[2,i] + gz * self.dt)
-                psi = particles[2,i]
-                
-                x_dot = u_b * np.cos(psi) - v_b * np.sin(psi)
-                y_dot = u_b * np.sin(psi) + v_b * np.cos(psi)
-                
-                particles[0,i] += x_dot * self.dt
-                particles[1,i] += y_dot * self.dt
-                particles[3,i], particles[4,i] = u_b, v_b
-                
-                # Update history for derivatives
-                p_prev[i], q_prev[i], r_prev[i] = gx, gy, gz
+            #   --- PROPAGATION WITH HYDRODYNAMIC MODEL (IMU) ----------------------------------
+            if imu_idx > 0 and imu_idx != prev_imu_idx:
+                #   This assures to only propagate when new IMU data is available
+                prev_imu_idx = imu_idx
+
+                for i in range(current_N):
+                    #   Add noise to measurements per particle
+                    noise = self.L @ np.random.randn(3)
+                    gx, gy, gz = imu_measures[0]+noise[0], imu_measures[1]+noise[1], imu_measures[2]+noise[2]
+                    omega_noisy[i] = gz
+                    ax = imu_measures[3]
+                    
+                    #   Update internal hydro states
+                    u_imu_naive[i] += ax * self.dt
+                    u_imu_naive[i] *= 0.98
+                    phi[i] += gx * self.dt
+                    theta_internal[i] += gy * self.dt
+                    
+                    #   Compute Body Velocities (u, v)
+                    u_b, v_b = self.hydrodynamic_model_2D(gz, phi[i], theta_internal[i], u_imu_naive[i])
+                    
+                    #   Update global position using heading
+                    particles[2,i] = wrap_to_pi(particles[2,i] + gz * self.dt)
+                    psi = particles[2,i]
+                    
+                    x_dot = u_b * np.cos(psi) - v_b * np.sin(psi)
+                    y_dot = u_b * np.sin(psi) + v_b * np.cos(psi)
+                    
+                    particles[0,i] += x_dot * self.dt
+                    particles[1,i] += y_dot * self.dt
+                    particles[3,i], particles[4,i] = u_b, v_b
+                    
+                    #   Update history for derivatives
+                    p_prev[i], q_prev[i], r_prev[i] = gx, gy, gz
 
             
-            # --- 2. MEASUREMENT UPDATE (SONAR) ------------------------------------------------
-            
-            # Check if this is a NEW sonar frame
+            #   --- MEASUREMENT UPDATE (SONAR) ------------------------------------------------
             if sonar_idx > 1 and sonar_idx != prev_sonar_idx:
+                #   Only update for NEW sonar frames
                 prev_sonar_idx = sonar_idx
                 
-                # Expensive image processing
+                #   Expensive image processing
                 sonar_raw = self.compute_sonar_diff(     
                     int(sonar_data[sonar_idx-1,1]),
-                    int(sonar_data[sonar_idx,1])
-                )
+                    int(sonar_data[sonar_idx,1]))
+                sonar_body = R_corr @ sonar_raw
                 
-                # Transform Sonar Observation to Global estimate frame
-                # We use the mean estimate theta for the transformation
+                #   Mean estimate theta for the transformation
                 est_theta = np.arctan2(np.sum(np.sin(particles[2,:]) * weights), 
                                        np.sum(np.cos(particles[2,:]) * weights))
-                
-                # Apply mounting correction and rotation
-                sonar_body = R_corr @ sonar_raw
 
-                # 3. For each particle, calculate the Likelihood
+                #   Calculate the Likelihood for each particle
                 for i in range(current_N):
-                    # The particle's predicted global displacement during this dt
-                    # Based on its own u_b and v_b from the hydro model
+                    #   Get particle heading
                     psi = particles[2, i]
                     
-                    # We rotate the sonar_body displacement into the GLOBAL frame 
-                    # using THIS particle's heading to see where it "thinks" it moved.
+                    #   Rotate the sonar_body displacement into the particle's GLOBAL frame
                     R_part = np.array([[np.cos(psi), -np.sin(psi), 0.0],
                                     [np.sin(psi),  np.cos(psi), 0.0],
                                     [0.0,            0.0,           1.0]])
                     
-                    # This is the "Observed" global displacement according to this particle
+                    #   Observed global displacement according to particle
                     meas_global = (R_part @ sonar_body).reshape(3,1)
                     
-                    # This is the "Predicted" global displacement according to the hydro model
+                    #   Predicted global displacement according to the hydro model
                     pred_global = np.array([
                         particles[0,i] - prev_particles[0,i],
                         particles[1,i] - prev_particles[1,i],
-                        wrap_to_pi(particles[2,i] - prev_particles[2,i])
-                    ]).reshape(3,1)
+                        wrap_to_pi(particles[2,i] - prev_particles[2,i])]).reshape(3,1)
                     
-                    # Residual between Observed and Predicted
+                    #   Residual between Observed and Predicted
                     residual = meas_global - pred_global
                     residual[2] = wrap_to_pi(residual[2])
                     
-                    # Update weights using Mahalanobis distance
+                    #   Weights update (Mahalanobis distance)
                     mahalanobis = residual.T @ self.R_inv @ residual
                     weights[i] *= np.exp(-0.5 * mahalanobis)
 
@@ -321,7 +340,6 @@ class USV_Model:
                 prev_particles = particles.copy()
 
                 #   Re-center Resampling when N_eff is low and 1s has passed
-                """"""
                 if N_eff < self.n_particles / 1.5 and count_particle > 20:
                     new_particles = np.zeros_like(particles)
 
@@ -331,15 +349,14 @@ class USV_Model:
                     best_vx, best_vy = best_p[3], best_p[4]
                     
                     for j in range(current_N):
-                        # Add jitter/noise relative to the L matrix
-                        # This maintains diversity while anchored to the estimate
+                        #   Add jitter/noise relative to the L matrix
                         jitter = self.L @ np.random.randn(3)
                         
                         new_particles[0, j] = est_x + jitter[0]
                         new_particles[1, j] = est_y + jitter[1]
                         new_particles[2, j] = wrap_to_pi(est_theta + jitter[2])
                         
-                        # Carry over the velocity so momentum isn't lost
+                        #   Carry over the velocity so momentum isn't lost
                         new_particles[3, j] = best_vx
                         new_particles[4, j] = best_vy
 
@@ -351,7 +368,7 @@ class USV_Model:
                 else:
                     pass
 
-            # --- 5. ESTIMATION ---
+            #   --- ESTIMATION -----------------------------------------------------------------
             est_x = np.sum(particles[0, :] * weights)
             est_y = np.sum(particles[1, :] * weights)
             
@@ -362,7 +379,7 @@ class USV_Model:
             count_particle += 1
 
 
-            # --- 5. LOGGING ---
+            #   --- LOGGING --------------------------------------------------------------------
             if t % 1.0 < 1e-5:
                 # Retrieve real GPS data
                 GPS_time_idx = math.floor(t)
@@ -424,29 +441,24 @@ class USV_Model:
         fig.suptitle('USV Particle Filter Localization Performance', fontsize=16)
         gs = fig.add_gridspec(2, 2, hspace=0.4, wspace=0.2)
         
-        # Ax1: Trajectory (Spans all rows in the 2nd column)
         ax1 = fig.add_subplot(gs[:, 1])
-        
-        # Ax2: Heading (1st row, 1st column)
         ax2 = fig.add_subplot(gs[0, 0])
-        
-        # Ax3: Errors (2nd row, 1st column)
         ax3 = fig.add_subplot(gs[1, 0])
 
-
-        # --- Subplot 1: Trajectory Comparison (X vs Y) ---
+        #   --- Subplot 1: Trajectory Comparison (X vs Y) ---
         
-        # Real Trajectory (Red)
+        #   Real Trajectory (Red)
         ax1.plot(real_x, real_y, label='True Trajectory', color='red', linestyle='-', linewidth=1.5)
-        # Estimated Trajectory (Blue)
+
+        #   Estimated Trajectory (Blue)
         ax1.plot(estimated_x_valid, estimated_y_valid, label='Estimated Trajectory', color='blue', linestyle='--', linewidth=2)
         
-        # Start/End Markers
-        # Estimated Start/End (Blue)
+        #   Estimated Start/End (Blue)
         ax1.plot(estimated_x_valid[0], estimated_y_valid[0], marker='*', markersize=12, color='blue', label='Est. Start', zorder=5)
         ax1.plot(   estimated_x_valid[-1], estimated_y_valid[-1], marker='*', markersize=12, markerfacecolor='none', \
                     markeredgecolor='blue', label='Est. End', zorder=5)
-        # Real Start/End (Red)
+        
+        #   Real Start/End (Red)
         ax1.plot(real_x_valid[0], real_y_valid[0], marker='*', markersize=12, color='red', label='True Start', zorder=5)
         ax1.plot(   real_x_valid[-1], real_y_valid[-1], marker='*', markersize=12, markerfacecolor='none', \
                     markeredgecolor='red', label='True End', zorder=5)
@@ -459,8 +471,7 @@ class USV_Model:
         ax1.set_xlim(left=-15,right=15)
         ax1.set_ylim(bottom=-40,top=40)
         
-        
-        # --- Subplot 2: Heading Comparison (Theta over Time) ---
+        #   --- Subplot 2: Heading Comparison (Theta over Time) ---
         
         ax2.plot(time, real_theta, label='True $\\theta$', color='red', linewidth=1.5)
         ax2.plot(time_valid, estimated_theta_valid, label='Estimated $\\theta$', color='blue', linestyle='--', linewidth=2)
@@ -472,8 +483,7 @@ class USV_Model:
         ax2.grid(True, linestyle=':', alpha=0.6)
         ax2.set_xlim(left=0)
 
-
-        # --- Subplot 3: Coordinate Errors Over Time ---
+        #   --- Subplot 3: Coordinate Errors Over Time ---
         
         ax3.plot(time_valid, error_x, label='Error $e_x$', color='C1', linewidth=2)
         ax3.plot(time_valid, error_y, label='Error $e_y$', color='C2', linewidth=2)
@@ -485,8 +495,6 @@ class USV_Model:
         ax3.legend(loc='best')
         ax3.grid(True, linestyle=':', alpha=0.6)
         ax3.set_xlim(left=0)
-        
-
         plt.tight_layout(rect=[0, 0.05, 1, 0.98])
         plt.show()
     
@@ -505,7 +513,6 @@ if __name__ == "__main__":
 
     print(f"Mean error (x,y,theta): {mean_error}\n")
     print(f"Standard deviation (x,y,theta): {std_deviation}\n")
-
 
     #   Plot results
     usv_model.plot_results(real_coords,estimated_coords)
