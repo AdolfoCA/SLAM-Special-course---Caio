@@ -41,12 +41,12 @@ class USV_Model:
         self.n_particles = num_particles
         
         #   Process covariance matrices
-        self.Q_IMU = np.diag([0.02, 0.02, 0.02])
+        self.Q_IMU = np.diag([0.5, 0.5, 0.5])
         self.dt = 0.05
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        self.R = np.diag([1.0, 1.0, 1.0]) 
+        self.R = np.diag([0.5, 0.5, 0.5]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
@@ -349,10 +349,9 @@ class USV_Model:
                 if N_eff < self.n_particles / 1.5 and count_particle > 20:
                     new_particles = np.zeros_like(particles)
 
-                    #   Identify the absolute best particle and extract its velocities
-                    best_idx = np.argmax(weights)
-                    best_p = particles[:, best_idx].copy()
-                    best_vx, best_vy = best_p[3], best_p[4]
+                    #   Define mean velocities to carry over
+                    part_vx = np.sum(particles[3, :] * weights)
+                    part_vy = np.sum(particles[4, :] * weights)
                     
                     for j in range(current_N):
                         #   Add jitter/noise relative to the L matrix
@@ -363,8 +362,8 @@ class USV_Model:
                         new_particles[2, j] = wrap_to_pi(est_theta + jitter[2])
                         
                         #   Carry over the velocity so momentum isn't lost
-                        new_particles[3, j] = best_vx
-                        new_particles[4, j] = best_vy
+                        new_particles[3, j] = part_vx
+                        new_particles[4, j] = part_vy
 
                     particles = new_particles
                     weights = np.ones(current_N) / current_N
@@ -508,7 +507,7 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=250)
+    usv_model = USV_Model(num_particles=100)
     max_error, error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
