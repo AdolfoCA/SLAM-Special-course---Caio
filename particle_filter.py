@@ -41,12 +41,12 @@ class USV_Model:
         self.n_particles = num_particles
         
         #   Process covariance matrices
-        self.Q_IMU = np.diag([0.5, 0.5, 0.5])
+        self.Q_IMU = np.diag([0.05, 0.05, 0.05])
         self.dt = 0.05
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        self.R = np.diag([0.5, 0.5, 0.5]) 
+        self.R = np.diag([2.0, 2.0, 2.0]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
@@ -507,7 +507,7 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=100)
+    usv_model = USV_Model(num_particles=10)
     max_error, error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
