@@ -2,6 +2,7 @@ import numpy as np
 from feature_matching import SonarFeatureMatcher
 from image_processing import SonarImageProcessor
 import cv2, os, sys, math, matplotlib.pyplot as plt
+import scipy.stats as stats
 
 
 #   Set random seed for reproducibility
@@ -221,9 +222,6 @@ class USV_Model:
         sonar_data = self.get_sonar_data(T)
 
         #   Internal states for hydro model (per particle)
-        p_prev = np.zeros(current_N)
-        q_prev = np.zeros(current_N)
-        r_prev = np.zeros(current_N)
         phi = np.zeros(current_N)
         theta_internal = np.zeros(current_N)
         u_imu_naive = np.zeros(current_N)
@@ -294,8 +292,6 @@ class USV_Model:
                     particles[1,i] += y_dot * self.dt
                     particles[3,i], particles[4,i] = u_b, v_b
                     
-                    #   Update history for derivatives
-                    p_prev[i], q_prev[i], r_prev[i] = gx, gy, gz
 
             
             #   --- MEASUREMENT UPDATE (SONAR) ------------------------------------------------
@@ -346,27 +342,50 @@ class USV_Model:
                 prev_particles = particles.copy()
 
                 #   Re-center Resampling when N_eff is low and 1s has passed
-                if N_eff < self.n_particles / 1.5 and count_particle > 20:
-                    new_particles = np.zeros_like(particles)
+                if N_eff < self.n_particles / 1.5 and count_particle > 40:
+                    # Define a threshold (particles below the average weight)
+                    avg_weight = 1.0 / current_N
+                    to_fix = weights < avg_weight
+                    fix_indices = np.where(to_fix)[0]
+                    
+                    new_particles = particles.copy()
+                    new_weights = weights.copy()
 
-                    #   Define mean velocities to carry over
+                    #   Define the Proposal q (your jitter distribution)
+                    q_dist = stats.multivariate_normal(mean=[est_x, est_y, est_theta], cov=self.Q_IMU)
+
+                    # Pre-calculate mean velocities to carry over
                     part_vx = np.sum(particles[3, :] * weights)
                     part_vy = np.sum(particles[4, :] * weights)
-                    
-                    for j in range(current_N):
-                        #   Add jitter/noise relative to the L matrix
+
+                    for j in fix_indices:
+                        # --- SAMPLE FROM q ---
                         jitter = self.L @ np.random.randn(3)
+                        new_x = est_x + jitter[0]
+                        new_y = est_y + jitter[1]
+                        new_theta = wrap_to_pi(est_theta + jitter[2])
                         
-                        new_particles[0, j] = est_x + jitter[0]
-                        new_particles[1, j] = est_y + jitter[1]
-                        new_particles[2, j] = wrap_to_pi(est_theta + jitter[2])
+                        # --- CALCULATE p(x_k | x_{k-1}) ---
                         
-                        #   Carry over the velocity so momentum isn't lost
+                        mu_p = [particles[0, j], particles[1, j], particles[2, j]]
+                        p_dist = stats.multivariate_normal(mean=mu_p, cov=self.Q_IMU)
+                        
+                        # --- CALCULATE LOG WEIGHTS ---
+                        # ln(w) = ln(Physics) - ln(Proposal)
+                        log_p = p_dist.logpdf([new_x, new_y, new_theta])
+                        log_q = q_dist.logpdf([new_x, new_y, new_theta])
+
+                        new_weights[j] = (1.0 / current_N) * np.exp(log_p - log_q)
+
+                        # Assign values
+                        new_particles[0, j] = new_x
+                        new_particles[1, j] = new_y
+                        new_particles[2, j] = new_theta
                         new_particles[3, j] = part_vx
                         new_particles[4, j] = part_vy
 
+                    weights = new_weights / (np.sum(new_weights) + 1.e-10)
                     particles = new_particles
-                    weights = np.ones(current_N) / current_N
                     count_particle = 0
                     
                     print(f"Time {t:.2f}s | Mean-Centered Resample | N_eff: {N_eff:.1f}")
