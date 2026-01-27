@@ -305,10 +305,6 @@ class USV_Model:
                     int(sonar_data[sonar_idx,1]))
                 sonar_body = R_corr @ sonar_raw
                 
-                #   Mean estimate theta for the transformation
-                est_theta = np.arctan2(np.sum(np.sin(particles[2,:]) * weights), 
-                                       np.sum(np.cos(particles[2,:]) * weights))
-
                 #   Calculate the Likelihood for each particle
                 for i in range(current_N):
                     #   Get particle heading
@@ -351,7 +347,7 @@ class USV_Model:
                     new_particles = particles.copy()
                     new_weights = weights.copy()
 
-                    #   Define the Proposal q (your jitter distribution)
+                    #   Define the Proposal q (jitter distribution)
                     q_dist = stats.multivariate_normal(mean=[est_x, est_y, est_theta], cov=self.Q_IMU)
 
                     # Pre-calculate mean velocities to carry over
