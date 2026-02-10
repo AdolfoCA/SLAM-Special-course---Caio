@@ -371,7 +371,7 @@ class USV_Model:
                         log_p = p_dist.logpdf([new_x, new_y, new_theta])
                         log_q = q_dist.logpdf([new_x, new_y, new_theta])
 
-                        new_weights[j] = (1.0 / current_N) * np.exp(log_p - log_q)
+                        new_weights[j] = weights[j] * np.exp(log_p - log_q)
 
                         # Assign values
                         new_particles[0, j] = new_x
