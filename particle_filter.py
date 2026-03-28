@@ -47,16 +47,21 @@ class USV_Model:
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        self.R = np.diag([2.0, 2.0, 2.0]) 
+        self.R = np.diag([4.0, 4.0, 4.0]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
         self.L = np.linalg.cholesky(self.Q_IMU)
 
         #   Hydrodynamic Coefficients (Tuned values)
-        self.alpha = [-0.05, 0.05, 0.005]       #   alpha[2], alpha[7], alpha[8] tuned
-        self.beta = [-1.0, -0.6, 1.0]           #   beta[3], beta[6], beta[7] tuned
+        self.alpha = [-0.05, -0.2, 0.005]       #   alpha[2], alpha[7], alpha[8] tuned
+        self.beta = [-1.0, -0.6, 2.5]           #   beta[3], beta[6], beta[7] tuned
         self.prop_rpm = 100.0
+
+        print("USV Model initialized with:")
+        print(f"- Number of particles: {self.n_particles}")
+        print(f"- IMU Process Noise Covariance Q_IMU:\n{self.Q_IMU}")
+        print(f"- Sonar Measurement Noise Covariance R:\n{self.R}")
 
 
     """
@@ -522,7 +527,7 @@ class USV_Model:
 #   -------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    usv_model = USV_Model(num_particles=10)
+    usv_model = USV_Model(num_particles=100)
     max_error, error, real_coords, estimated_coords = usv_model.particle_filter()
 
     #   Plot maximum error
