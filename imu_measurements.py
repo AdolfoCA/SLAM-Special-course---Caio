@@ -32,7 +32,7 @@ def get_IMU_data_full(tot_time: float):
     Based on equations (1) and (2) from the Randeni et al. paper.
     Constraint: Heave (w) and z_dot are forced to 0.
 """
-def hydrodynamic_model_2D(state, rates, accels, u_imu, dt):
+def hydrodynamic_model_2D(state, rates, u_imu, dt):
     # Unpack Rates (p=Roll Rate, q=Pitch Rate, r=Yaw Rate)
     p, q, r = rates[0], rates[1], rates[2]
     
@@ -51,11 +51,11 @@ def hydrodynamic_model_2D(state, rates, accels, u_imu, dt):
     # --- MODEL PARAMETERS (Placeholder Values) ---
     # Coefficients for Surge (u)
     # alpha = [a1...a9]
-    alpha = [0.0, 0.05, 0.05, 0.0, 0.0, 0.0, 0.0, 0.05, 0.002]
+    alpha = [0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.15, 0.001]
     
     # Coefficients for Sway (v)
     # beta = [b1...b8]
-    beta = [0.0, 0.0, 0.0, -1.0, 0.0, 0.0, -0.6, 1.0]
+    beta = [0.0, 0.0, 0.0, -0.4, 0.0, 0.0, -0.6, -0.5]
 
     # Eq (1): Surge (u)
     # Terms involving z_dot are removed (0)
@@ -68,13 +68,21 @@ def hydrodynamic_model_2D(state, rates, accels, u_imu, dt):
                beta[3]*u_imu*r + beta[4]*q*r + beta[5]*p*q + 
                beta[6]*r*abs(r) + beta[7]*np.cos(theta)*np.sin(phi))
 
+    if t < 0.2:
+        print(f"Time: {t:.2f} | u: {u_model:.4f} | v: {v_model:.4f} | psi: {phi:.4f}")
+
     return u_model, v_model
 
 
 if __name__ == "__main__":
     total_time = 231
     IMU_data = get_IMU_data_full(total_time)
-    
+    R_imu = np.array([[ 1.0,  0.0,  0.0],
+                  [ 0.0, -1.0,  0.0],
+                  [ 0.0,  0.0, -1.0]])
+    IMU_data[:, 1:4] = (R_imu @ IMU_data[:, 1:4].T).T
+    IMU_data[:, 4:7] = (R_imu @ IMU_data[:, 4:7].T).T
+
     dt = 0.05
     time_steps = np.linspace(0, total_time, int((total_time + dt) / dt))
 
@@ -124,7 +132,7 @@ if __name__ == "__main__":
             model_internal['theta'] += gyro_meas[1] * dt
             
             # 3. COMPUTE U and V (Eq 1 & 2) 
-            u_body, v_body = hydrodynamic_model_2D(model_internal, gyro_meas, accel_meas, current_u_imu_naive, dt)
+            u_body, v_body = hydrodynamic_model_2D(model_internal, gyro_meas, current_u_imu_naive, dt)
             
             # Update derivatives history
             model_internal['p_prev'] = gyro_meas[0]
@@ -135,13 +143,10 @@ if __name__ == "__main__":
             # Update Heading (Theta/Z) using Yaw rate (r)
             state_vector[2,0] += gyro_meas[2] * dt
             state_vector[2,0] = wrap_to_pi(state_vector[2,0])
-            
-            # Rotate Body Velocities to Global Frame
-            # [x_dot]   [cos(th)  -sin(th)] [u]
-            # [y_dot] = [sin(th)   cos(th)] [v]
+
             psi = state_vector[2,0]
             x_dot = u_body * np.cos(psi) - v_body * np.sin(psi)
-            y_dot = u_body * np.sin(psi) + v_body * np.cos(psi)
+            y_dot = -u_body * np.sin(psi) + v_body * np.cos(psi)
             
             # Integrate Position
             state_vector[0,0] += x_dot * dt
@@ -152,9 +157,9 @@ if __name__ == "__main__":
             state_vector[4,0] = v_body
 
             last_t = t
-            
             history.append(state_vector.flatten().copy())
             time_history.append(t)
+
 
     # --- PLOTTING ---
     history = np.array(history)

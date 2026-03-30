@@ -6,7 +6,7 @@ import scipy.stats as stats
 
 
 #   Set random seed for reproducibility
-np.random.seed(50)
+np.random.seed(10)
 
 
 #   Arrange path to working directory
@@ -47,15 +47,15 @@ class USV_Model:
         self.sonar_dt = 0.0667
 
         #   Measurement noise covariances for Sonar
-        self.R = np.diag([4.0, 4.0, 4.0]) 
+        self.R = np.diag([3.0, 3.0, 3.0]) 
         self.R_inv = np.linalg.inv(self.R)
 
         #   Precompute Cholesky decomposition for IMU noise sampling
         self.L = np.linalg.cholesky(self.Q_IMU)
 
         #   Hydrodynamic Coefficients (Tuned values)
-        self.alpha = [-0.05, -0.2, 0.005]       #   alpha[2], alpha[7], alpha[8] tuned
-        self.beta = [-1.0, -0.6, 2.5]           #   beta[3], beta[6], beta[7] tuned
+        self.alpha = [0.4, 0.15, 0.001]         #   alpha[2], alpha[7], alpha[8] tuned
+        self.beta = [-0.4, -0.6, -0.5]          #   beta[3], beta[6], beta[7] tuned
         self.prop_rpm = 100.0
 
         print("USV Model initialized with:")
@@ -209,7 +209,6 @@ class USV_Model:
         #   State: [x, y, theta, vx, vy]  Shape: (5, N)
         particles = np.zeros((5, current_N))
         weights = np.ones(current_N) / current_N
-        omega_noisy = np.zeros(current_N)
         
         #   Initialize around first ground truth with some noise
         particles[0,:] = real_coords[0,0]
@@ -235,7 +234,8 @@ class USV_Model:
         estimated_coords = []
         error = []
         max_error = [0.0, 0.0, 0.0]
-        R_corr = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
+        R_corr = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        R_imu = np.array([[ 1.0,  0.0,  0.0],[ 0.0, -1.0,  0.0],[ 0.0,  0.0, -1.0]])
 
         #   Estimated coordinates needed for resampling
         est_x = 0.0
@@ -263,6 +263,8 @@ class USV_Model:
 
             #   IMU measurements at current time
             imu_measures = imu_data[imu_idx, 1:7]
+            imu_measures[0:3] = R_imu @ imu_measures[0:3]
+            imu_measures[3:6] = R_imu @ imu_measures[3:6]
 
 
             #   --- PROPAGATION WITH HYDRODYNAMIC MODEL (IMU) ----------------------------------
@@ -274,7 +276,6 @@ class USV_Model:
                     #   Add noise to measurements per particle
                     noise = self.L @ np.random.randn(3)
                     gx, gy, gz = imu_measures[0]+noise[0], imu_measures[1]+noise[1], imu_measures[2]+noise[2]
-                    omega_noisy[i] = gz
                     ax = imu_measures[3]
                     
                     #   Update internal hydro states
@@ -291,7 +292,7 @@ class USV_Model:
                     psi = particles[2,i]
                     
                     x_dot = u_b * np.cos(psi) - v_b * np.sin(psi)
-                    y_dot = u_b * np.sin(psi) + v_b * np.cos(psi)
+                    y_dot = -u_b * np.sin(psi) + v_b * np.cos(psi)
                     
                     particles[0,i] += x_dot * self.dt
                     particles[1,i] += y_dot * self.dt
